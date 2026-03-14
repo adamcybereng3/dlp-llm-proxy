@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+from typing import List
+from .models import DetectorFinding, DLPDecision
+
+
+def risk_score(findings: List[DetectorFinding], llm_label: str | None, llm_conf: float | None) -> int:
+    score = 0
+    counts = {f.name: f.count for f in findings}
+
+    # Strong PII signals -> should BLOCK
+    score += 55 * min(counts.get("SSN_PATTERN", 0), 2)
+    score += 55 * min(counts.get("CC_LUHN_VALID", 0), 2)
+
+    # Secrets -> should BLOCK
+    score += 50 * min(counts.get("GENERIC_SECRET_KV", 0), 2)
+    score += 50 * min(counts.get("SK_LIKE_KEY", 0), 3)
+    score += 60 * min(counts.get("AWS_ACCESS_KEY_PATTERN", 0), 2)
+    score += 70 * min(counts.get("PRIVATE_KEY_BLOCK", 0), 1)
+
+    # Weaker context signals -> usually COACH
+    score += 6 * min(counts.get("EMAIL_PATTERN", 0), 10)
+    score += 10 * min(counts.get("PII_KEYWORDS", 0), 6)
+    score += 8 * min(counts.get("CONF_KEYWORDS", 0), 6)
+
+    # Volume escalation -> QUARANTINE
+    if counts.get("SSN_PATTERN", 0) >= 5:
+        score += 25
+    if counts.get("EMAIL_PATTERN", 0) >= 10:
+        score += 20
+    if counts.get("PII_KEYWORDS", 0) >= 5 and counts.get("EMAIL_PATTERN", 0) >= 5:
+        score += 15
+
+    # LLM boost (bounded)
+    if llm_label in {"PII", "CONFIDENTIAL"} and llm_conf is not None:
+        score += int(20 * max(0.0, min(1.0, llm_conf)))
+
+    return max(0, min(100, score))
+
+
+def choose_action(score: int) -> str:
+    # Your desired demo behavior:
+    # - QUARANTINE for many-record leaks
+    # - BLOCK for SSN/API keys/tokens
+    # - COACH for single medical note type content
+    if score >= 85:
+        return "QUARANTINE"
+    if score >= 55:
+        return "BLOCK"
+    if score >= 20:
+        return "COACH"
+    return "ALLOW"
+
+
+def choose_label(findings: List[DetectorFinding], llm_label: str | None) -> str:
+    names = {f.name for f in findings}
+
+    if "SSN_PATTERN" in names or "CC_LUHN_VALID" in names:
+        return "PII"
+
+    # Secrets -> CONFIDENTIAL
+    if any(n in names for n in {"GENERIC_SECRET_KV", "SK_LIKE_KEY", "AWS_ACCESS_KEY_PATTERN", "PRIVATE_KEY_BLOCK"}):
+        return "CONFIDENTIAL"
+
+    if "CONF_KEYWORDS" in names:
+        return "CONFIDENTIAL"
+
+    if llm_label in {"PII", "CONFIDENTIAL", "BENIGN"}:
+        return llm_label
+
+    return "UNKNOWN" if findings else "BENIGN"
+
+
+def build_decision(
+    findings: List[DetectorFinding],
+    llm_label: str | None,
+    llm_conf: float | None,
+    reasons: List[str],
+) -> DLPDecision:
+    score = risk_score(findings, llm_label, llm_conf)
+    action = choose_action(score)
+    label = choose_label(findings, llm_label)
+
+    conf = 0.5
+    if llm_conf is not None:
+        conf = float(max(0.0, min(1.0, llm_conf)))
+
+    if any(f.name in {"SSN_PATTERN", "CC_LUHN_VALID"} for f in findings):
+        conf = max(conf, 0.9)
+
+    if any(f.name in {"PRIVATE_KEY_BLOCK", "AWS_ACCESS_KEY_PATTERN", "GENERIC_SECRET_KV", "SK_LIKE_KEY"} for f in findings):
+        conf = max(conf, 0.85)
+
+    return DLPDecision(
+        label=label,
+        confidence=conf,
+        reasons=reasons,
+        action=action,
+        risk_score=score,
+        findings=findings,
+    )
