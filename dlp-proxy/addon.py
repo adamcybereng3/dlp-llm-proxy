@@ -2,163 +2,197 @@ from __future__ import annotations
 
 import re
 import requests
+from urllib.parse import unquote_plus, urlparse
 from mitmproxy import http, ctx
 
 # -----------------------------
-# CONFIG (edit for your environment)
+# Engine config
 # -----------------------------
-
-# DLP engine is running on same Ubuntu gateway (Option A)
 DLP_ENGINE_URL = "http://127.0.0.1:8000/analyze"
-
-# Ollama model used by your engine
 USE_LLM = 1
 LLM_MODEL = "llama3.1:8b"
+TIMEOUT_S = 60
 
-# Request timeout to the DLP engine
-TIMEOUT_S = 120
-
-# Demo-only filtering:
-# Only inspect traffic whose destination contains one of these strings.
-# This prevents background browser traffic (telemetry) from cluttering your logs.
-DEMO_TARGETS = [
-    "10.0.1.130:9000",     # your test exfil server
-    "/submit",             # (optional) ensure the submit endpoint is in path
-    # Add additional demo targets here, e.g. "yourdomain.com/upload"
-]
-
-# Max bytes to inspect from request body to avoid huge uploads
-MAX_BODY_BYTES = 300_000
-
+DEBUG_EXTRACT_PREVIEW = True
+DEBUG_SKIP_REASON = False  # set True if you want to see skip reasons in logs
 
 # -----------------------------
-# SIMPLE HTML PAGES FOR ENFORCEMENT
+# Targets: Gmail + Exfil servers
 # -----------------------------
-COACH_HTML = b"""<html><body>
-<h2>DLP Coaching</h2>
-<p>This request appears to contain <b>sensitive data</b>.</p>
-<p>Please verify the destination is approved before proceeding.</p>
-</body></html>"""
+ENABLE_GMAIL = True
+ENABLE_EXFIL = True
 
-BLOCK_HTML = b"""<html><body>
-<h2>DLP Blocked</h2>
-<p>This request was <b>blocked</b> by DLP policy.</p>
-</body></html>"""
+# Gmail host
+GMAIL_HOST = "mail.google.com"
 
-QUAR_HTML = b"""<html><body>
-<h2>DLP Quarantined</h2>
-<p>This request was <b>quarantined</b> by DLP policy (simulated).</p>
-</body></html>"""
+# Gmail noise controls
+GMAIL_PATH_KEYWORDS = {"/sync/", "/mail/"}
+GMAIL_BODY_KEYWORDS = {"subject", "to", "cc", "bcc", "body", "message", "msg", "draft", "thread"}
 
+# Exfil hosts
+EXFIL_HOSTS = {"10.0.1.130"}  # add more if needed
+
+# Only inspect these exfil paths (leave empty set() to inspect all exfil paths)
+EXFIL_PATH_PREFIXES = {"/submit", "/upload", "/email/send"}
+EXFIL_ALLOW_ALL_PATHS = False
+
+# ✅ Separate minimum lengths
+MIN_GMAIL_CHARS = 80   # higher to reduce Gmail noise
+MIN_EXFIL_CHARS = 10   # lower so short SSN / API-key samples are inspected
 
 # -----------------------------
-# HELPERS
+# Response bodies
 # -----------------------------
+COACH_HTML = b"<html><body><h2>DLP Coaching</h2><p>Sensitive data detected. Please verify destination.</p></body></html>"
+BLOCK_HTML = b"<html><body><h2>DLP Blocked</h2><p>Blocked by DLP policy.</p></body></html>"
+QUAR_HTML  = b"<html><body><h2>DLP Quarantined</h2><p>Quarantined by DLP policy (simulated).</p></body></html>"
 
-def should_inspect(dest: str) -> bool:
-    """Return True if this request is part of the demo target set."""
-    return any(t in dest for t in DEMO_TARGETS)
+def respond(flow: http.HTTPFlow, code: int, body: bytes):
+    flow.response = http.Response.make(code, body, {"Content-Type": "text/html; charset=utf-8"})
 
-def respond(flow: http.HTTPFlow, status_code: int, body: bytes):
-    flow.response = http.Response.make(
-        status_code,
-        body,
-        {"Content-Type": "text/html; charset=utf-8"}
-    )
-
-def extract_text_from_request(flow: http.HTTPFlow) -> tuple[str, str]:
-    """
-    Returns (content_type, extracted_text).
-    Covers:
-      - text/plain, json, urlencoded
-      - multipart/form-data (best-effort extraction for demo)
-    """
+# -----------------------------
+# Extraction helpers
+# -----------------------------
+def extract_text(flow: http.HTTPFlow, max_bytes: int = 300_000):
     ctype = (flow.request.headers.get("content-type") or "").lower()
-    raw = (flow.request.raw_content or b"")[:MAX_BODY_BYTES]
+    raw = (flow.request.raw_content or b"")[:max_bytes]
 
-    # Common text bodies
-    if any(x in ctype for x in ["text/plain", "application/json", "application/x-www-form-urlencoded"]):
+    if "text/plain" in ctype or "application/json" in ctype:
         return "txt", raw.decode("utf-8", errors="ignore")
 
-    # Multipart form uploads (demo extraction)
+    if "application/x-www-form-urlencoded" in ctype:
+        decoded = unquote_plus(raw.decode("utf-8", errors="ignore"))
+        return "urlencoded", decoded
+
     if "multipart/form-data" in ctype:
         body = raw.decode("utf-8", errors="ignore")
-        # Pull long printable spans to approximate extracted content
         printable = re.findall(r"[ -~]{20,}", body)
-        extracted = "\n".join(printable[:200])
+        extracted = "\n".join(printable[:300])
         return "multipart", extracted
 
-    return "unknown", ""
+    # fallback: try decode anyway (sometimes no content-type)
+    try:
+        return "unknown", raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return "unknown", ""
 
-def call_dlp_engine(destination: str, content_type: str, extracted_text: str) -> dict | None:
-    """
-    Call local DLP engine. Returns decision JSON or None on failure.
-    """
+# -----------------------------
+# Target filters
+# -----------------------------
+def host_of(url: str) -> str:
+    u = urlparse(url)
+    return (u.hostname or "").lower()
+
+def path_of(url: str) -> str:
+    u = urlparse(url)
+    return (u.path or "").lower()
+
+def should_inspect_gmail(dest: str, extracted_text: str) -> bool:
+    if not ENABLE_GMAIL:
+        return False
+
+    h = host_of(dest)
+    p = path_of(dest)
+
+    if h != GMAIL_HOST:
+        return False
+
+    if len(extracted_text.strip()) < MIN_GMAIL_CHARS:
+        return False
+
+    if GMAIL_PATH_KEYWORDS and not any(k in p for k in GMAIL_PATH_KEYWORDS):
+        return False
+
+    low = extracted_text.lower()
+    if GMAIL_BODY_KEYWORDS and not any(k in low for k in GMAIL_BODY_KEYWORDS):
+        return False
+
+    return True
+
+def should_inspect_exfil(dest: str, extracted_text: str) -> bool:
+    if not ENABLE_EXFIL:
+        return False
+
+    h = host_of(dest)
+    p = path_of(dest)
+
+    if h not in {x.lower() for x in EXFIL_HOSTS}:
+        return False
+
+    # ✅ exfil uses a lower minimum to catch short samples
+    if len(extracted_text.strip()) < MIN_EXFIL_CHARS:
+        return False
+
+    if EXFIL_ALLOW_ALL_PATHS:
+        return True
+
+    if EXFIL_PATH_PREFIXES and any(p.startswith(prefix) for prefix in EXFIL_PATH_PREFIXES):
+        return True
+
+    return False
+
+def should_inspect(dest: str, extracted_text: str) -> bool:
+    return should_inspect_exfil(dest, extracted_text) or should_inspect_gmail(dest, extracted_text)
+
+# -----------------------------
+# Engine call
+# -----------------------------
+def call_engine(dest: str, ctype: str, text: str):
     event = {
-        "channel": "web_upload" if content_type == "multipart" else "form_post",
-        "destination": destination,
-        "content_type": content_type,
-        "extracted_text": extracted_text,
+        "channel": "web_upload" if ctype == "multipart" else "form_post",
+        "destination": dest,
+        "content_type": ctype,
+        "extracted_text": text,
         "metadata": {},
-        "encryption_visibility": "decrypted"
+        "encryption_visibility": "decrypted",
     }
     params = {"use_llm": USE_LLM, "model": LLM_MODEL}
-
-    try:
-        r = requests.post(DLP_ENGINE_URL, params=params, json=event, timeout=TIMEOUT_S)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        ctx.log.warn(f"DLP engine call failed: {e}")
-        return None
-
+    r = requests.post(DLP_ENGINE_URL, params=params, json=event, timeout=TIMEOUT_S)
+    r.raise_for_status()
+    return r.json()
 
 # -----------------------------
-# MITMPROXY ADDON
+# Addon
 # -----------------------------
-
 class DLPAddon:
     def request(self, flow: http.HTTPFlow):
-        # Only inspect methods that typically contain payloads
         if flow.request.method.upper() not in {"POST", "PUT", "PATCH"}:
             return
 
         dest = flow.request.pretty_url
+        ctype, text = extract_text(flow)
 
-        # Demo filter to avoid unrelated background traffic
-        if not should_inspect(dest):
-            return
-
-        ctype, text = extract_text_from_request(flow)
-
-        # If there is no text to analyze, let it pass
         if not text.strip():
-            ctx.log.info(f"[DLP] No extractable text; allowing. dest={dest}")
             return
 
-        decision = call_dlp_engine(dest, ctype, text)
-        if not decision:
-            # Fail-open for demo stability (you can change to fail-closed if needed)
-            ctx.log.warn(f"[DLP] Engine unavailable; allowing. dest={dest}")
+        if not should_inspect(dest, text):
+            if DEBUG_SKIP_REASON:
+                ctx.log.info(f"[DLP] skipped dest={dest} host={host_of(dest)} path={path_of(dest)} len={len(text.strip())} ctype={ctype}")
+            return
+
+        if DEBUG_EXTRACT_PREVIEW:
+            preview = text[:160].replace("\n", "\\n")
+            ctx.log.info(f"[DLP] extracted ({ctype}) preview='{preview}' dest={dest}")
+
+        try:
+            decision = call_engine(dest, ctype, text)
+        except Exception as e:
+            ctx.log.warn(f"[DLP] engine call failed: {e}")
             return
 
         action = decision.get("action", "ALLOW")
-        label = decision.get("label", "UNKNOWN")
-        score = decision.get("risk_score", 0)
+        label  = decision.get("label", "UNKNOWN")
+        score  = decision.get("risk_score", 0)
 
         ctx.log.info(f"[DLP] decision action={action} label={label} score={score} dest={dest}")
 
         if action == "ALLOW":
             return
-        elif action == "COACH":
+        if action == "COACH":
             respond(flow, 200, COACH_HTML)
         elif action == "BLOCK":
             respond(flow, 403, BLOCK_HTML)
         elif action == "QUARANTINE":
-            # simulated quarantine: block + inform user
             respond(flow, 403, QUAR_HTML)
-        else:
-            return
-
 
 addons = [DLPAddon()]

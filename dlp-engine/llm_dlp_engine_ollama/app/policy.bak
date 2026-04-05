@@ -8,106 +8,63 @@ def risk_score(findings: List[DetectorFinding], llm_label: str | None, llm_conf:
     score = 0
     counts = {f.name: f.count for f in findings}
 
-    # -----------------------------
-    # Strong PII signals
-    # -----------------------------
+    # Strong PII signals -> should BLOCK
     score += 55 * min(counts.get("SSN_PATTERN", 0), 2)
     score += 55 * min(counts.get("CC_LUHN_VALID", 0), 2)
 
-    # -----------------------------
-    # Secrets / credentials
-    # -----------------------------
+    # Secrets -> should BLOCK
     score += 50 * min(counts.get("GENERIC_SECRET_KV", 0), 2)
     score += 50 * min(counts.get("SK_LIKE_KEY", 0), 3)
     score += 60 * min(counts.get("AWS_ACCESS_KEY_PATTERN", 0), 2)
     score += 70 * min(counts.get("PRIVATE_KEY_BLOCK", 0), 1)
 
-    # -----------------------------
-    # Weak contextual indicators
-    # -----------------------------
+    # Weaker context signals -> usually COACH
     score += 6 * min(counts.get("EMAIL_PATTERN", 0), 10)
     score += 10 * min(counts.get("PII_KEYWORDS", 0), 6)
     score += 8 * min(counts.get("CONF_KEYWORDS", 0), 6)
 
-    # -----------------------------
-    # Volume escalation
-    # -----------------------------
+    # Volume escalation -> QUARANTINE
     if counts.get("SSN_PATTERN", 0) >= 5:
         score += 25
-
     if counts.get("EMAIL_PATTERN", 0) >= 10:
         score += 20
-
     if counts.get("PII_KEYWORDS", 0) >= 5 and counts.get("EMAIL_PATTERN", 0) >= 5:
         score += 15
 
-    # -----------------------------
-    # LLM contribution
-    # -----------------------------
-    if llm_label is not None and llm_conf is not None:
-        conf = max(0.0, min(1.0, llm_conf))
-
-        # If NO deterministic findings exist,
-        # rely more heavily on the LLM
-        if not findings:
-
-            if llm_label == "CONFIDENTIAL":
-                score += int(55 * conf)
-
-            elif llm_label == "PII":
-                score += int(65 * conf)
-
-            elif llm_label == "BENIGN":
-                score += 0
-
-        # If deterministic signals already exist,
-        # treat LLM as supporting evidence
-        else:
-
-            if llm_label in {"PII", "CONFIDENTIAL"}:
-                score += int(20 * conf)
+    # LLM boost (bounded)
+    if llm_label in {"PII", "CONFIDENTIAL"} and llm_conf is not None:
+        score += int(20 * max(0.0, min(1.0, llm_conf)))
 
     return max(0, min(100, score))
 
 
 def choose_action(score: int) -> str:
-    """
-    Enforcement thresholds
-    """
-
+    # Your desired demo behavior:
+    # - QUARANTINE for many-record leaks
+    # - BLOCK for SSN/API keys/tokens
+    # - COACH for single medical note type content
     if score >= 85:
         return "QUARANTINE"
-
     if score >= 55:
         return "BLOCK"
-
     if score >= 20:
         return "COACH"
-
     return "ALLOW"
 
 
 def choose_label(findings: List[DetectorFinding], llm_label: str | None) -> str:
     names = {f.name for f in findings}
 
-    # PII detections
     if "SSN_PATTERN" in names or "CC_LUHN_VALID" in names:
         return "PII"
 
-    # Secret detection
-    if any(n in names for n in {
-        "GENERIC_SECRET_KV",
-        "SK_LIKE_KEY",
-        "AWS_ACCESS_KEY_PATTERN",
-        "PRIVATE_KEY_BLOCK",
-    }):
+    # Secrets -> CONFIDENTIAL
+    if any(n in names for n in {"GENERIC_SECRET_KV", "SK_LIKE_KEY", "AWS_ACCESS_KEY_PATTERN", "PRIVATE_KEY_BLOCK"}):
         return "CONFIDENTIAL"
 
-    # Confidential keyword signals
     if "CONF_KEYWORDS" in names:
         return "CONFIDENTIAL"
 
-    # Fall back to LLM classification
     if llm_label in {"PII", "CONFIDENTIAL", "BENIGN"}:
         return llm_label
 
@@ -120,29 +77,18 @@ def build_decision(
     llm_conf: float | None,
     reasons: List[str],
 ) -> DLPDecision:
-
     score = risk_score(findings, llm_label, llm_conf)
-
     action = choose_action(score)
-
     label = choose_label(findings, llm_label)
 
-    # Base confidence
     conf = 0.5
-
     if llm_conf is not None:
         conf = float(max(0.0, min(1.0, llm_conf)))
 
-    # Deterministic signals increase confidence
     if any(f.name in {"SSN_PATTERN", "CC_LUHN_VALID"} for f in findings):
         conf = max(conf, 0.9)
 
-    if any(f.name in {
-        "PRIVATE_KEY_BLOCK",
-        "AWS_ACCESS_KEY_PATTERN",
-        "GENERIC_SECRET_KV",
-        "SK_LIKE_KEY",
-    } for f in findings):
+    if any(f.name in {"PRIVATE_KEY_BLOCK", "AWS_ACCESS_KEY_PATTERN", "GENERIC_SECRET_KV", "SK_LIKE_KEY"} for f in findings):
         conf = max(conf, 0.85)
 
     return DLPDecision(
