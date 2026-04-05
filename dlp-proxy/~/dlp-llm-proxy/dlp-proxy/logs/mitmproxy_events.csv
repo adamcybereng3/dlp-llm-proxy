@@ -1,0 +1,2 @@
+timestamp,method,destination,host,path,content_type,risk_score,label,action,text_length,preview
+2026-04-05T03:44:48.956395,POST,http://10.0.1.130:9000/submit,10.0.1.130,/submit,urlencoded,65,PII,BLOCK,21,data=SSN: 123-55-2343
