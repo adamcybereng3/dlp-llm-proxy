@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 EncryptionVisibility = Literal["decrypted", "metadata_only"]
 
@@ -25,3 +25,7 @@ class DLPDecision(BaseModel):
     action: Literal["ALLOW", "COACH", "BLOCK", "QUARANTINE"] = "ALLOW"
     risk_score: int = 0
     findings: List[DetectorFinding] = Field(default_factory=list)
+
+    # ✅ NEW: drive dashboard/export from engine truth, not addon parsing
+    match_type: Optional[str] = Field(None, description="Primary detector match type (e.g., SSN_PATTERN)")
+    match_excerpt: Optional[str] = Field(None, description="Redacted excerpt around first match")

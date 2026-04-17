@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional, List
 
 from .models import DLPEvent, DLPDecision
-from .detectors import detect
+from .detectors import detect, primary_match  # ✅ added primary_match
 from .policy import build_decision, risk_score
 from .llm_ollama import call_ollama_classify, make_excerpt
 
@@ -35,6 +35,24 @@ def maybe_store_quarantine(event: DLPEvent, decision: DLPDecision) -> None:
         return
 
 
+def finalize_decision(event: DLPEvent, decision: DLPDecision) -> DLPDecision:
+    """
+    ✅ Ensures match_type/match_excerpt are always present in the API response,
+    and that quarantine evidence is stored consistently.
+    """
+    try:
+        mtype, mexcerpt = primary_match(event.extracted_text)
+        decision.match_type = mtype
+        decision.match_excerpt = mexcerpt
+    except Exception:
+        # Don't break decisions if excerpting fails
+        decision.match_type = None
+        decision.match_excerpt = None
+
+    maybe_store_quarantine(event, decision)
+    return decision
+
+
 def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "llama3.1:8b") -> DLPDecision:
     findings = detect(event.extracted_text)
 
@@ -57,8 +75,7 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
         reasons.append("Encrypted traffic not decrypted: metadata-only posture (content classification limited).")
         reasons.insert(0, f"DecisionSource={decision_source}")
         decision = build_decision(findings, llm_label=None, llm_conf=None, reasons=reasons)
-        maybe_store_quarantine(event, decision)
-        return decision
+        return finalize_decision(event, decision)
 
     # If LLM is disabled, return deterministic decision only.
     if not use_llm:
@@ -66,8 +83,7 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
         reasons.append("LLM disabled: using deterministic logic only.")
         reasons.insert(0, f"DecisionSource={decision_source}")
         decision = build_decision(findings, llm_label=None, llm_conf=None, reasons=reasons)
-        maybe_store_quarantine(event, decision)
-        return decision
+        return finalize_decision(event, decision)
 
     # If we have no extracted text, we can't call the LLM.
     has_text = bool((event.extracted_text or "").strip())
@@ -76,8 +92,7 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
         reasons.append("No extracted text available for LLM classification.")
         reasons.insert(0, f"DecisionSource={decision_source}")
         decision = build_decision(findings, llm_label=None, llm_conf=None, reasons=reasons)
-        maybe_store_quarantine(event, decision)
-        return decision
+        return finalize_decision(event, decision)
 
     # Deterministic-only score (LLM not included yet)
     det_score = risk_score(findings, llm_label=None, llm_conf=None)
@@ -89,8 +104,7 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
         reasons.append(f"Skipping LLM (strong deterministic signal). det_score={det_score}")
         reasons.insert(0, f"DecisionSource={decision_source}")
         decision = build_decision(findings, llm_label=None, llm_conf=None, reasons=reasons)
-        maybe_store_quarantine(event, decision)
-        return decision
+        return finalize_decision(event, decision)
 
     llm_label: Optional[str] = None
     llm_conf: Optional[float] = None
@@ -115,8 +129,7 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
 
         reasons.insert(0, f"DecisionSource={decision_source}")
         decision = build_decision(findings, llm_label=llm_label, llm_conf=llm_conf, reasons=reasons)
-        maybe_store_quarantine(event, decision)
-        return decision
+        return finalize_decision(event, decision)
 
     # Low score WITH some weak signals -> skip LLM (save time)
     if det_score <= LLM_SKIP_LOW_SCORE:
@@ -124,8 +137,7 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
         reasons.append(f"Skipping LLM (low deterministic score). det_score={det_score}")
         reasons.insert(0, f"DecisionSource={decision_source}")
         decision = build_decision(findings, llm_label=None, llm_conf=None, reasons=reasons)
-        maybe_store_quarantine(event, decision)
-        return decision
+        return finalize_decision(event, decision)
 
     # Borderline band -> call LLM
     if LLM_USE_SCORE_MIN <= det_score <= LLM_USE_SCORE_MAX:
@@ -149,5 +161,4 @@ def analyze_event(event: DLPEvent, use_llm: bool = True, ollama_model: str = "ll
 
     reasons.insert(0, f"DecisionSource={decision_source}")
     decision = build_decision(findings, llm_label=llm_label, llm_conf=llm_conf, reasons=reasons)
-    maybe_store_quarantine(event, decision)
-    return decision
+    return finalize_decision(event, decision)

@@ -58,8 +58,8 @@ st.markdown("""
        METRIC CARDS
     ----------------------------- */
     div[data-testid="metric-container"] {
-        background-color: #0b5ed7;
-        border: 1px solid #60a5fa;
+        background-color: #1e293b;
+        border: 1px solid #334155;
         padding: 16px;
         border-radius: 14px;
     }
@@ -73,26 +73,30 @@ st.markdown("""
     }
 
     /* -----------------------------
-       TABS
+       TABS (FIXED)
     ----------------------------- */
+
+    /* All tab text */
     button[data-baseweb="tab"] {
         color: #ffffff !important;
     }
 
+    /* Active tab */
     button[aria-selected="true"] {
         color: #ffffff !important;
-        border-bottom: 2px solid #ef4444 !important;
+        border-bottom: 2px solid #ef4444 !important; /* red underline */
     }
 
+    /* Optional: inactive tabs slightly dim but still visible */
     button[aria-selected="false"] {
-        color: #93c5fd !important;
+        color: #cbd5f5 !important;
     }
 
     /* -----------------------------
        DATAFRAME
     ----------------------------- */
     div[data-testid="stDataFrame"] {
-        border: 1px solid #60a5fa;
+        border: 1px solid #334155;
         border-radius: 12px;
         overflow: hidden;
     }
@@ -101,39 +105,9 @@ st.markdown("""
        SMALL TEXT
     ----------------------------- */
     .small-note {
-        color: #67e8f9;
+        color: #94a3b8;
         font-size: 14px;
     }
-
-    /* -----------------------------
-       DOWNLOAD BUTTON
-    ----------------------------- */
-    div[data-testid="stDownloadButton"] button {
-        background-color: #22c55e !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: bold !important;
-        background-image: none !important;
-    }
-
-    div[data-testid="stDownloadButton"] button:hover {
-        background-color: #16a34a !important;
-        color: white !important;
-    }
-
-    div[data-testid="stDownloadButton"] button:focus,
-    div[data-testid="stDownloadButton"] button:active {
-        background-color: #16a34a !important;
-        color: white !important;
-        outline: none !important;
-        box-shadow: none !important;
-    }
-
-    div[data-testid="stDownloadButton"] button span {
-        color: white !important;
-    }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -169,100 +143,6 @@ def load_data():
         df["timestamp"] = df["timestamp"].dt.tz_convert("America/New_York")
 
     return df
-
-@st.cache_data
-def convert_df_to_excel(df_in):
-    from io import BytesIO
-    from openpyxl.styles import PatternFill, Font, Alignment
-    from openpyxl.utils import get_column_letter
-
-    export_df = df_in.copy()
-
-    # Add export-friendly content columns so the Excel file includes readable content.
-    if "preview" not in export_df.columns:
-        export_df["preview"] = ""
-    if "full_content" not in export_df.columns:
-        export_df["full_content"] = ""
-
-    def _preview_for_export(row):
-        for col in ["match_excerpt", "redacted_excerpt", "preview", "extracted_text", "original_excerpt"]:
-            if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
-                val = str(row[col])
-                return val[:5000]
-        return ""
-
-    def _full_for_export(row):
-        for col in ["extracted_text", "original_excerpt", "match_excerpt", "redacted_excerpt"]:
-            if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
-                return str(row[col])[:20000]
-        return ""
-
-    export_df["preview"] = export_df.apply(_preview_for_export, axis=1)
-    export_df["full_content"] = export_df.apply(_full_for_export, axis=1)
-
-    for col in export_df.columns:
-        if pd.api.types.is_datetime64tz_dtype(export_df[col]):
-            export_df[col] = (
-                export_df[col]
-                .dt.tz_localize(None)
-                .dt.strftime("%Y-%m-%d %H:%M:%S")
-            )
-
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="DLP Events")
-
-        workbook = writer.book
-        worksheet = writer.sheets["DLP Events"]
-
-        fills = {
-            "ALLOW": PatternFill(fill_type="solid", start_color="C6EFCE", end_color="C6EFCE"),
-            "COACH": PatternFill(fill_type="solid", start_color="FFEB9C", end_color="FFEB9C"),
-            "BLOCK": PatternFill(fill_type="solid", start_color="FFC7CE", end_color="FFC7CE"),
-            "QUARANTINE": PatternFill(fill_type="solid", start_color="E4C1F9", end_color="E4C1F9"),
-        }
-
-        header_fill = PatternFill(fill_type="solid", start_color="D9EAF7", end_color="D9EAF7")
-        header_font = Font(bold=True)
-
-        # Style header row.
-        for cell in worksheet[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(vertical="top")
-
-        # Freeze top row and enable filters.
-        worksheet.freeze_panes = "A2"
-        worksheet.auto_filter.ref = worksheet.dimensions
-
-        action_col_idx = None
-        for idx, col_name in enumerate(export_df.columns, start=1):
-            if col_name == "action":
-                action_col_idx = idx
-                break
-
-        # Color each row based on action.
-        if action_col_idx is not None:
-            for row_idx in range(2, len(export_df) + 2):
-                action_val = worksheet.cell(row=row_idx, column=action_col_idx).value
-                fill = fills.get(str(action_val).upper())
-                if fill:
-                    for col_idx in range(1, len(export_df.columns) + 1):
-                        worksheet.cell(row=row_idx, column=col_idx).fill = fill
-
-        # Wrap long text columns and set widths.
-        long_text_cols = {"preview", "full_content", "match_excerpt", "extracted_text", "original_excerpt", "reasons", "reason"}
-        for idx, col_name in enumerate(export_df.columns, start=1):
-            letter = get_column_letter(idx)
-            if col_name in long_text_cols:
-                worksheet.column_dimensions[letter].width = 50
-                for row_idx in range(2, len(export_df) + 2):
-                    worksheet.cell(row=row_idx, column=idx).alignment = Alignment(wrap_text=True, vertical="top")
-            else:
-                max_len = max([len(str(col_name))] + [len(str(v)) for v in export_df[col_name].head(50).fillna("")])
-                worksheet.column_dimensions[letter].width = min(max(max_len + 2, 12), 28)
-
-    return output.getvalue()
 
 df = load_data()
 
@@ -304,10 +184,6 @@ def safe_col_exists(df_in, col_name):
     return col_name in df_in.columns
 
 def get_preview_text(row):
-    # ✅ prefer new match_excerpt
-    if "match_excerpt" in row.index and pd.notna(row["match_excerpt"]) and str(row["match_excerpt"]).strip():
-        return str(row["match_excerpt"])
-    # existing fallbacks
     if "redacted_excerpt" in row.index and pd.notna(row["redacted_excerpt"]):
         return str(row["redacted_excerpt"])
     if "preview" in row.index and pd.notna(row["preview"]):
@@ -353,13 +229,13 @@ label_filter = st.sidebar.multiselect(
 
 filtered_df = df.copy()
 
-if safe_col_exists(filtered_df, "action"):
+if safe_col_exists(filtered_df, "action") and action_filter:
     filtered_df = filtered_df[filtered_df["action"].isin(action_filter)]
 
-if safe_col_exists(filtered_df, "host"):
+if safe_col_exists(filtered_df, "host") and host_filter:
     filtered_df = filtered_df[filtered_df["host"].isin(host_filter)]
 
-if safe_col_exists(filtered_df, "label"):
+if safe_col_exists(filtered_df, "label") and label_filter:
     filtered_df = filtered_df[filtered_df["label"].isin(label_filter)]
 
 # -----------------------------
@@ -407,16 +283,6 @@ with overview_tab:
 
     st.divider()
 
-    excel_data = convert_df_to_excel(filtered_df)
-
-    st.download_button(
-        label="Export to Excel",
-        key="overview_export",
-        data=excel_data,
-        file_name="dlp_dashboard_export.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
@@ -428,7 +294,7 @@ with overview_tab:
 
             fig, ax = plt.subplots(figsize=(6, 4))
             fig.patch.set_facecolor("#0f172a")
-            ax.set_facecolor("#082f49")
+            ax.set_facecolor("#1e293b")
 
             action_counts.plot(
                 kind="bar",
@@ -456,11 +322,11 @@ with overview_tab:
 
         if safe_col_exists(filtered_df, "label") and not filtered_df.empty:
             label_counts = filtered_df["label"].value_counts()
-            pie_colors = [LABEL_COLORS.get(lbl, "#67e8f9") for lbl in label_counts.index]
+            pie_colors = [LABEL_COLORS.get(lbl, "#94a3b8") for lbl in label_counts.index]
 
             fig2, ax2 = plt.subplots(figsize=(5, 5))
             fig2.patch.set_facecolor("#0f172a")
-            ax2.set_facecolor("#082f49")
+            ax2.set_facecolor("#1e293b")
 
             wedges, texts, autotexts = ax2.pie(
                 label_counts,
@@ -488,7 +354,7 @@ with overview_tab:
 
         fig3, ax3 = plt.subplots(figsize=(10, 4))
         fig3.patch.set_facecolor("#0f172a")
-        ax3.set_facecolor("#082f49")
+        ax3.set_facecolor("#1e293b")
 
         ax3.plot(trend_counts.index, trend_counts.values)
         ax3.set_title("Event Volume by Minute", color="white", fontsize=14, pad=12)
@@ -514,11 +380,8 @@ with overview_tab:
 
         display_df = filtered_df.copy()
 
-        # ✅ prefer match_excerpt > redacted_excerpt > extracted_text
-        if safe_col_exists(display_df, "match_excerpt"):
-            display_df["preview"] = display_df["match_excerpt"].astype(str)
-        elif safe_col_exists(display_df, "redacted_excerpt"):
-            display_df["preview"] = display_df["redacted_excerpt"].astype(str)
+        if safe_col_exists(display_df, "redacted_excerpt"):
+            display_df["preview"] = display_df["redacted_excerpt"]
         elif safe_col_exists(display_df, "extracted_text"):
             display_df["preview"] = display_df["extracted_text"].astype(str).str[:100] + "..."
         else:
@@ -532,8 +395,6 @@ with overview_tab:
             "label",
             "action",
             "risk_score",
-            # ✅ new columns
-            "match_type",
             "preview"
         ]:
             if col in display_df.columns:
@@ -569,24 +430,13 @@ with overview_tab:
 
             st.write("**Destination:**", row.get("destination", ""))
             st.write("**Host:**", row.get("host", ""))
-            st.write("**Path:**", row.get("path", ""))
             st.write("**Label:**", row.get("label", ""))
             st.write("**Action:**", row.get("action", ""))
             st.write("**Risk Score:**", row.get("risk_score", ""))
-
-            # ✅ new fields
-            st.write("**Match Type:**", row.get("match_type", ""))
-            st.write("**Match Excerpt:**")
-            match_ex = row.get("match_excerpt", "")
-            if pd.notna(match_ex) and str(match_ex).strip():
-                st.code(str(match_ex), language="text")
-            else:
-                st.caption("No match excerpt (no pattern hit or field not present).")
-
             st.write("**Confidence:**", row.get("confidence", ""))
             st.write("**Decision Source:**", row.get("decision_source", ""))
 
-            reveal = st.checkbox("👁 Reveal sensitive details", value=False)
+            reveal = st.checkbox("👁 Reveal sensitive details", value=True)
 
             st.write("**Preview:**")
             if reveal:
@@ -640,17 +490,6 @@ with quarantine_tab:
     else:
         quarantined_df = pd.DataFrame()
 
-    if not quarantined_df.empty:
-        quarantine_excel_data = convert_df_to_excel(quarantined_df)
-
-        st.download_button(
-            label="Export Quarantine to Excel",
-            key="quarantine_export_excel",
-            data=quarantine_excel_data,
-            file_name="dlp_quarantine_export.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
     if quarantined_df.empty:
         st.info("No quarantined events found in the current log.")
     else:
@@ -665,13 +504,9 @@ with quarantine_tab:
                 "timestamp",
                 "host",
                 "destination",
-                "path",
                 "label",
                 "action",
                 "risk_score",
-                # ✅ new columns
-                "match_type",
-                "match_excerpt",
                 "payload_sha256"
             ]:
                 if col in quarantined_df.columns:
@@ -701,27 +536,16 @@ with quarantine_tab:
             st.write("**Timestamp:**", row.get("timestamp", ""))
             st.write("**Host:**", row.get("host", ""))
             st.write("**Destination:**", row.get("destination", ""))
-            st.write("**Path:**", row.get("path", ""))
             st.write("**Label:**", row.get("label", ""))
             st.write("**Action:**", row.get("action", ""))
             st.write("**Risk Score:**", row.get("risk_score", ""))
-
-            # ✅ new fields
-            st.write("**Match Type:**", row.get("match_type", ""))
-            st.write("**Match Excerpt:**")
-            match_ex = row.get("match_excerpt", "")
-            if pd.notna(match_ex) and str(match_ex).strip():
-                st.code(str(match_ex), language="text")
-            else:
-                st.caption("No match excerpt (no pattern hit or field not present).")
-
             st.write("**Confidence:**", row.get("confidence", ""))
             st.write("**Decision Source:**", row.get("decision_source", ""))
 
             if "payload_sha256" in row.index and pd.notna(row["payload_sha256"]):
                 st.write("**SHA-256:**", row.get("payload_sha256", ""))
 
-            reveal_q = st.checkbox("👁 Reveal sensitive details", value=False, key="q_reveal")
+            reveal_q = st.checkbox("👁 Reveal sensitive details", value=True, key="q_reveal")
 
             st.write("**Excerpt:**")
             if reveal_q:
@@ -765,3 +589,4 @@ with quarantine_tab:
 # -----------------------------
 time.sleep(refresh_rate)
 st.rerun()
+

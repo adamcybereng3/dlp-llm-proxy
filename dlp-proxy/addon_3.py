@@ -117,22 +117,14 @@ def ensure_csv():
                 "action",
                 "text_length",
                 "preview",
-                # ✅ optional upgrades (now populated from engine decision)
-                "match_type",
-                "match_excerpt",
             ])
         ctx.log.info(f"[DLP] Created log file {LOG_FILE}")
 
 
-def log_event(method, dest, ctype, score, label, action, text, match_type="", match_excerpt=""):
+def log_event(method, dest, ctype, score, label, action, text):
     host = host_of(dest)
     path = path_of(dest)
-
-    # ✅ Preview should show what the engine detected (best for Excel/dashboard)
-    if match_excerpt and str(match_excerpt).strip():
-        preview = str(match_excerpt).replace("\n", " ")
-    else:
-        preview = (text[:200].replace("\n", " ") if text else "")
+    preview = text[:120].replace("\n", " ")
 
     with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -148,8 +140,6 @@ def log_event(method, dest, ctype, score, label, action, text, match_type="", ma
             action,
             len(text),
             preview,
-            match_type or "",
-            match_excerpt or "",
         ])
 
 
@@ -333,14 +323,9 @@ class DLPAddon:
             ctx.log.warn(f"[DLP] engine call failed: {e}")
             return
 
-        # Engine decision fields
         action = str(decision.get("action", "ALLOW"))
         label = str(decision.get("label", "UNKNOWN"))
         score = int(decision.get("risk_score", 0))
-
-        # ✅ Pull match fields directly from engine response
-        match_type = decision.get("match_type") or ""
-        match_excerpt = decision.get("match_excerpt") or ""
 
         # Gmail behavior #2: QUARANTINE only if truly bulk
         if host_of(dest) == GMAIL_HOST:
@@ -355,9 +340,9 @@ class DLPAddon:
         # Logging rules
         if host_of(dest) == GMAIL_HOST:
             if should_log_gmail(dest, action):
-                log_event(flow.request.method, dest, ctype, score, label, action, text, match_type, match_excerpt)
+                log_event(flow.request.method, dest, ctype, score, label, action, text)
         else:
-            log_event(flow.request.method, dest, ctype, score, label, action, text, match_type, match_excerpt)
+            log_event(flow.request.method, dest, ctype, score, label, action, text)
 
         # Enforcement
         if action == "ALLOW":
