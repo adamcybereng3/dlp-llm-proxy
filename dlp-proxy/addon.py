@@ -47,7 +47,7 @@ GMAIL_SEND_PATH_HINT = "/sync/u/"
 GMAIL_SEND_SUFFIXES = ("/i/fd", "/i/s")
 
 # ✅ Log only the stable endpoint to keep dashboard clean
-GMAIL_LOG_PATH_ONLY = "/sync/u/0/i/fd"
+GMAIL_LOG_PATH_ONLY = "/i/s"
 
 EXFIL_HOSTS = {"10.0.1.130"}
 EXFIL_PATH_PREFIXES = {"/submit", "/upload", "/email/send"}
@@ -332,7 +332,7 @@ def should_log_gmail(dest: str, action: str) -> bool:
     global _last_gmail_log_time
 
     # only log the stable fd endpoint
-    if path_of(dest) != GMAIL_LOG_PATH_ONLY:
+    if GMAIL_LOG_PATH_ONLY not in path_of(dest):
         return False
 
     if GMAIL_LOG_ONLY_NON_ALLOW and action == "ALLOW":
