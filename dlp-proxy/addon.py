@@ -128,11 +128,18 @@ def log_event(method, dest, ctype, score, label, action, text, match_type="", ma
     host = host_of(dest)
     path = path_of(dest)
 
-    # ✅ Preview should show what the engine detected (best for Excel/dashboard)
-    if match_excerpt and str(match_excerpt).strip():
-        preview = str(match_excerpt).replace("\n", " ")
+    # ✅ Prefer clean extracted text first
+    clean_preview = text.strip().replace("\n", " ")
+
+    if clean_preview:
+        preview = clean_preview[:200]
+
+    # fallback to match excerpt if extraction failed
+    elif match_excerpt:
+        preview = match_excerpt.replace("\n", " ")
+
     else:
-        preview = (text[:200].replace("\n", " ") if text else "")
+        preview = text[:200].replace("\n", " ")
 
     with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -179,13 +186,104 @@ def extract_text(flow: http.HTTPFlow, max_bytes: int = 300000):
     raw = (flow.request.raw_content or b"")[:max_bytes]
     dest = flow.request.pretty_url
     host = host_of(dest)
-
+    
     if "text/plain" in ctype or "application/json" in ctype:
-        return "txt", raw.decode("utf-8", errors="ignore")
+        decoded = raw.decode("utf-8", errors="ignore")
+
+        # 🔥 Gmail override (THIS is what you're missing)
+        if host == GMAIL_HOST:
+            extracted_parts = []
+
+            # Try to extract readable strings
+            strings = re.findall(r'"([^"]{8,})"', decoded)
+
+            clean_strings = []
+
+            for s in strings:
+                s = s.strip()
+
+                # Skip Gmail metadata
+                if "thread-f:" in s or "msg-f:" in s:
+                    continue
+
+                # Skip tokens/IDs
+                if re.fullmatch(r"[A-Za-z0-9\-_:]{15,}", s):
+                    continue
+
+                # Keep human text
+                if len(s) > 15 and " " in s:
+                    clean_strings.append(s)
+
+            if clean_strings:
+                extracted_parts.extend(clean_strings[:50])
+
+            # CRITICAL fallback
+            extracted_parts.append(decoded)
+
+            combined = "\n".join([p for p in extracted_parts if p.strip()])
+
+            return "txt", combined  # ✅ keep type unchanged
+
+        return "txt", decoded
 
     if "application/x-www-form-urlencoded" in ctype:
         decoded = unquote_plus(raw.decode("utf-8", errors="ignore"))
         return "urlencoded", decoded
+
+    if "application/x-www-form-urlencoded" in ctype:
+        decoded = raw.decode("utf-8", errors="ignore")
+        parsed = parse_qs(decoded)
+
+    # ✅ ONLY enhance Gmail traffic
+        if host == GMAIL_HOST:
+            extracted_parts = []
+
+            # 🔹 1. Direct fields (best signal)
+            for key in ["body", "subject", "message", "content"]:
+                if key in parsed:
+                    extracted_parts.append(" ".join(parsed[key]))
+
+            # 🔹 2. Gmail hidden payload (f.req)
+            if "f.req" in parsed:
+                try:
+                    f_req = parsed["f.req"][0]
+
+                    # Extract all quoted strings
+                    strings = re.findall(r'"([^"]{8,})"', f_req)
+
+                    clean_strings = []
+
+                    for s in strings:
+                        s = s.strip()
+
+                        # ❌ Skip Gmail metadata
+                        if "thread-f:" in s or "msg-f:" in s:
+                            continue
+
+                        # ❌ Skip IDs / tokens
+                        if re.fullmatch(r"[A-Za-z0-9\-_:]{15,}", s):
+                            continue
+
+                        # ✅ Keep human-readable text
+                        if len(s) > 15 and " " in s:
+                            clean_strings.append(s)
+
+                    if clean_strings:
+                        extracted_parts.extend(clean_strings[:50])
+
+                except Exception:
+                    pass
+
+            # 🔹 3. CRITICAL fallback (do NOT remove — preserves PII detection)
+            extracted_parts.append(unquote_plus(decoded))
+
+            combined = "\n".join([p for p in extracted_parts if p.strip()])
+
+            return "urlencoded", combined  # ✅ KEEP ORIGINAL TYPE
+
+        # ✅ Non-Gmail stays EXACTLY the same
+        return "urlencoded", unquote_plus(decoded)
+
 
     if "multipart/form-data" in ctype:
         body = raw.decode("utf-8", errors="ignore")
