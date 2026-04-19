@@ -586,7 +586,7 @@ with overview_tab:
             st.write("**Confidence:**", row.get("confidence", ""))
             st.write("**Decision Source:**", row.get("decision_source", ""))
 
-            reveal = st.checkbox("👁 Reveal sensitive details", value=False)
+            reveal = st.checkbox("👁 Reveal sensitive details", value=True)
 
             st.write("**Preview:**")
             if reveal:
@@ -721,7 +721,7 @@ with quarantine_tab:
             if "payload_sha256" in row.index and pd.notna(row["payload_sha256"]):
                 st.write("**SHA-256:**", row.get("payload_sha256", ""))
 
-            reveal_q = st.checkbox("👁 Reveal sensitive details", value=False, key="q_reveal")
+            reveal_q = st.checkbox("👁 Reveal sensitive details", value=True, key="q_reveal")
 
             st.write("**Excerpt:**")
             if reveal_q:

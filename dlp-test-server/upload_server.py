@@ -8,7 +8,7 @@ class Handler(BaseHTTPRequestHandler):
 <!DOCTYPE html>
 <html>
 <head>
-<title>DLP Inspection Portal</title>
+<title>DLP Processing Portal</title>
 <style>
 body {
     margin: 0;
@@ -19,21 +19,15 @@ body {
 .header {
     background: #020617;
     padding: 16px 24px;
-    border-bottom: 1px solid #7f1d1d;
+    border-bottom: 1px solid #334155;
     display: flex;
     justify-content: space-between;
 }
 .badge {
-    background: #7f1d1d;
-    color: #ef4444;
+    background: #1e293b;
+    color: #38bdf8;
     padding: 6px 12px;
     border-radius: 8px;
-}
-.warning {
-    background: #7f1d1d;
-    color: #fecaca;
-    padding: 10px;
-    text-align: center;
 }
 .container {
     max-width: 900px;
@@ -41,13 +35,13 @@ body {
     background: #020617;
     padding: 30px;
     border-radius: 16px;
-    border: 1px solid #7f1d1d;
+    border: 1px solid #334155;
 }
 textarea {
     width: 100%;
     height: 180px;
     background: #0f172a;
-    border: 1px solid #7f1d1d;
+    border: 1px solid #334155;
     border-radius: 10px;
     padding: 12px;
     color: white;
@@ -57,38 +51,37 @@ button {
     padding: 10px 18px;
     border-radius: 8px;
     border: none;
-    background: #ef4444;
+    background: #3b82f6;
     color: white;
     cursor: pointer;
+}
+button:hover {
+    background: #2563eb;
 }
 .footer {
     margin-top: 20px;
     font-size: 12px;
-    color: #fca5a5;
+    color: #94a3b8;
 }
 </style>
 </head>
 <body>
 
 <div class="header">
-    <h1>DLP Inspection Portal</h1>
-    <div class="badge">⚠ HTTP UNENCRYPTED</div>
-</div>
-
-<div class="warning">
-    Warning: This channel is not encrypted.
+    <h1>DLP Processing Portal</h1>
+    <div class="badge">HTTP Processing</div>
 </div>
 
 <div class="container">
     <h2>Submit Data for Inspection</h2>
 
     <form method="POST" action="/submit">
-        <textarea name="data" placeholder="Paste sensitive content here..."></textarea>
+        <textarea name="data" placeholder="Paste content here for processing..."></textarea>
         <br>
-        <button type="submit">Inspect & Send</button>
+        <button type="submit">Process Request</button>
     </form>
 
-    <div class="footer">Unsecured Channel • Monitored</div>
+    <div class="footer">Inline Data Protection Inspection</div>
 </div>
 
 </body>
@@ -115,13 +108,67 @@ button {
         if text_data:
             print("Text:", text_data[:200])
 
-        resp = "Submission processed (insecure channel).".encode("utf-8")
+        # 🔥 Fancy response page
+        html = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>Submission Processed</title>
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background: linear-gradient(135deg, #0f172a, #1e293b);
+    color: #e2e8f0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+.card {
+    background: #020617;
+    padding: 40px;
+    border-radius: 16px;
+    box-shadow: 0 0 30px rgba(0,0,0,0.5);
+    text-align: center;
+    border: 1px solid #334155;
+}
+h1 {
+    color: #38bdf8;
+    margin-bottom: 10px;
+}
+p {
+    color: #cbd5f5;
+}
+.badge {
+    margin-top: 15px;
+    display: inline-block;
+    padding: 6px 14px;
+    background: #1e293b;
+    border-radius: 8px;
+    font-size: 14px;
+    color: #38bdf8;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+    <h1>Submission Processed</h1>
+    <p>Your request has been successfully processed by the DLP system.</p>
+    <div class="badge">HTTP Processing</div>
+</div>
+
+</body>
+</html>
+"""
+
+        encoded = html.encode("utf-8")
 
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(resp)))
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(resp)
+        self.wfile.write(encoded)
 
 
 HTTPServer(("0.0.0.0", 9000), Handler).serve_forever()
